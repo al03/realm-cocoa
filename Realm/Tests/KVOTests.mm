@@ -25,6 +25,9 @@
 #import "RLMRealm_Private.hpp"
 #import "RLMSchema_Private.h"
 
+#import "shared_realm.hpp"
+
+#import <realm/descriptor.hpp>
 #import <realm/group.hpp>
 
 #import <atomic>
@@ -1319,7 +1322,7 @@ public:
 @implementation KVOMultipleAccessorsTests
 - (id)observableForObject:(id)value {
     if (RLMObject *obj = RLMDynamicCast<RLMObject>(value)) {
-        RLMObject *copy = [[obj.objectSchema.accessorClass alloc] initWithRealm:obj.realm schema:obj.objectSchema];
+        RLMObject *copy = RLMCreateManagedAccessor(obj.objectSchema.accessorClass, obj.realm, obj->_info);
         copy->_row = obj->_row;
         return copy;
     }
@@ -1573,9 +1576,9 @@ public:
     [self.secondaryRealm refresh];
 
     if (RLMObject *obj = RLMDynamicCast<RLMObject>(value)) {
-        RLMObject *copy = [[obj.objectSchema.accessorClass alloc] initWithRealm:self.secondaryRealm
-                                                                         schema:self.secondaryRealm.schema[obj.objectSchema.className]];
-        copy->_row = (*copy.objectSchema.table)[obj->_row.get_index()];
+        RLMObject *copy = RLMCreateManagedAccessor(obj.objectSchema.accessorClass, self.secondaryRealm,
+                                                   &self.secondaryRealm->_info[obj.objectSchema.className]);
+        copy->_row = (*copy->_info->table())[obj->_row.get_index()];
         return copy;
     }
     else if (RLMArray *array = RLMDynamicCast<RLMArray>(value)) {
@@ -1688,19 +1691,81 @@ public:
 - (void)testInsertNewTables {
     KVOObject *obj = [self createObject];
 
-    {
-        KVORecorder r(self, obj, @"boolCol");
+    KVORecorder r1(self, obj, @"boolCol");
+    KVORecorder r2(self, obj, @"int32Col");
 
-        // Add tables before the observed one so that the observed one's index changes
-        realm::Group &group = self.realm->_realm->read_group();
-        realm::TableRef table1 = group.insert_table(5, "new table");
-        realm::TableRef table2 = group.insert_table(0, "new table 2");
-        table1->add_column(realm::type_Int, "col");
-        table2->add_column(realm::type_Int, "col");
+    obj.boolCol = YES;
 
-        obj.boolCol = YES;
-        AssertChanged(r, @NO, @YES);
-    }
+    // Add tables before the observed one so that the observed one's index changes
+    realm::Group &group = self.realm->_realm->read_group();
+    realm::TableRef table1 = group.insert_table(5, "new table");
+    realm::TableRef table2 = group.insert_table(0, "new table 2");
+    table1->add_column(realm::type_Int, "col");
+    table2->add_column(realm::type_Int, "col");
+
+    obj.int32Col = 3;
+    AssertChanged(r1, @NO, @YES);
+    AssertChanged(r2, @2, @3);
+}
+
+- (void)testInsertNewColumns {
+    KVOObject *obj = [self createObject];
+
+    KVORecorder r1(self, obj, @"boolCol");
+    KVORecorder r2(self, obj, @"int32Col");
+    auto ndx = obj->_info->tableColumn(@"int32Col");
+
+    // Add a column before the observed one so that the observed one's index changes
+    obj.boolCol = YES;
+    auto& table = *obj->_info->table();
+    table.insert_column(0, realm::type_Binary, "new col");
+    obj->_row.set_int(ndx + 1, 3); // can't use the accessor after a local schema change
+
+    AssertChanged(r1, @NO, @YES);
+    AssertChanged(r2, @2, @3);
+}
+
+- (void)testMoveObservedColumnBeforeChange {
+    KVOObject *obj = [self createObject];
+    auto ndx = obj->_info->tableColumn(@"boolCol");
+
+    KVORecorder r(self, obj, @"boolCol");
+    auto& table = *obj->_info->table();
+    realm::_impl::TableFriend::move_column(*table.get_descriptor(), ndx, 0);
+    obj->_row.set_bool(0, true); // can't use the accessor after a local schema change
+    AssertChanged(r, @NO, @YES);
+}
+
+- (void)testMoveObservedColumnAfterChange {
+    KVOObject *obj = [self createObject];
+    auto ndx = obj->_info->tableColumn(@"boolCol");
+
+    KVORecorder r(self, obj, @"boolCol");
+    obj.boolCol = YES;
+    realm::_impl::TableFriend::move_column(*obj->_info->table()->get_descriptor(), ndx, 0);
+    AssertChanged(r, @NO, @YES);
+}
+
+- (void)testShiftObservedColumnBeforeChange {
+    KVOObject *obj = [self createObject];
+    auto ndx = obj->_info->tableColumn(@"boolCol");
+
+    KVORecorder r(self, obj, @"boolCol");
+    auto& table = *obj->_info->table();
+    realm::_impl::TableFriend::move_column(*table.get_descriptor(), ndx + 1, ndx);
+    table.insert_column(0, realm::type_Binary, "new col");
+    obj->_row.set_bool(ndx + 1, true); // can't use the accessor after a local schema change
+    AssertChanged(r, @NO, @YES);
+}
+
+- (void)testShiftObservedColumnAfterChange {
+    KVOObject *obj = [self createObject];
+    auto ndx = obj->_info->tableColumn(@"boolCol");
+
+    KVORecorder r(self, obj, @"boolCol");
+    obj.boolCol = YES;
+    realm::_impl::TableFriend::move_column(*obj->_info->table()->get_descriptor(), ndx + 1, ndx);
+    AssertChanged(r, @NO, @YES);
 }
 @end
 
