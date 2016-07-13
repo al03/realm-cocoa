@@ -103,6 +103,7 @@ public:
                 ++table;
         }
         m_new_tables.push_back(table_ndx);
+        m_current_table = table_ndx;
         return true;
     }
     bool insert_column(size_t, DataType, StringData, bool) { return schema_error_unless_new_table(); }
@@ -451,15 +452,18 @@ public:
     bool insert_column(size_t ndx, DataType, StringData, bool)
     {
         for (auto& observer : m_observers) {
-            insert_empty_at(observer.changes, ndx);
+            if (observer.table_ndx == current_table())
+                insert_empty_at(observer.changes, ndx);
         }
         return true;
     }
 
     bool move_column(size_t from, size_t to)
     {
-        for (auto& observer : m_observers)
-            rotate(observer.changes, from, to);
+        for (auto& observer : m_observers) {
+            if (observer.table_ndx == current_table())
+                rotate(observer.changes, from, to);
+        }
         return true;
     }
 
@@ -625,7 +629,7 @@ public:
     bool insert_column(size_t ndx, DataType, StringData, bool)
     {
         for (auto& list : m_info.lists) {
-            if (list.col_ndx >= ndx)
+            if (list.table_ndx == current_table() && list.col_ndx >= ndx)
                 ++list.col_ndx;
         }
         return true;
@@ -645,8 +649,10 @@ public:
 
     bool move_column(size_t from, size_t to)
     {
-        for (auto& list : m_info.lists)
-            adjust_for_move(list.col_ndx, from, to);
+        for (auto& list : m_info.lists) {
+            if (list.table_ndx == current_table())
+                adjust_for_move(list.col_ndx, from, to);
+        }
         return true;
     }
 
